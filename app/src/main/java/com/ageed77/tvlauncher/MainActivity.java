@@ -1,7 +1,6 @@
 package com.ageed77.tvlauncher;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -12,6 +11,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Outline;
+import android.graphics.Path;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
@@ -30,10 +30,12 @@ import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextClock;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -71,6 +73,10 @@ public class MainActivity extends Activity {
         void on(String id);
     }
 
+    interface IndexPick {
+        void on(int index);
+    }
+
     static class Item {
         String label;
         Drawable img;
@@ -84,6 +90,8 @@ public class MainActivity extends Activity {
     TextView greeting, temp, cond, rowLabel, watchLabel;
     LinearLayout mainRow, watchRow;
     View firstTile;
+    FrameLayout rootView, overlay;
+    View focusBefore;
 
     int u(float v) {
         return Math.round(v * s);
@@ -101,6 +109,7 @@ public class MainActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(0xFF14161F);
         root.setClipChildren(false);
+        rootView = root;
 
         // soft background circles
         place(root, circle(0xFF2B2F5C), u(460), u(460), u(910), u(-150));
@@ -247,6 +256,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        closeOverlay();
         if (firstTile != null) {
             firstTile.requestFocus();
         }
@@ -254,7 +264,8 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        // This is the home screen, so Back does nothing.
+        // Back only closes the pop-up menus. On the home screen itself it does nothing.
+        closeOverlay();
     }
 
     // ---------------------------------------------------------------- periodic work
@@ -487,13 +498,12 @@ public class MainActivity extends Activity {
         for (int k = 0; k < names.length; k++) {
             names[k] = list.get(k).loadLabel(pm);
         }
-        new AlertDialog.Builder(this).setTitle("Apps").setItems(names,
-                new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int which) {
-                        launchInfo(list.get(which)).run();
-                    }
-                }).show();
+        showList("Apps", names, new IndexPick() {
+            @Override
+            public void on(int which) {
+                launchInfo(list.get(which)).run();
+            }
+        });
     }
 
     Runnable launchInfo(final ResolveInfo ri) {
@@ -592,13 +602,12 @@ public class MainActivity extends Activity {
             }
             names[k] = n;
         }
-        new AlertDialog.Builder(this).setTitle(title).setItems(names,
-                new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int which) {
-                        cb.on(ids[which]);
-                    }
-                }).show();
+        showList(title, names, new IndexPick() {
+            @Override
+            public void on(int which) {
+                cb.on(ids[which]);
+            }
+        });
     }
 
     void openInput(String id) {
@@ -645,11 +654,183 @@ public class MainActivity extends Activity {
         });
     }
 
-    void powerMenu() {
-        if (!PowerService.showPowerMenu()) {
+    void doPower(boolean sleep) {
+        closeOverlay();
+        if (!PowerService.trigger(sleep)) {
             toast("Turn on the power service first (see README)");
             startSafe(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
         }
+    }
+
+    /** The Sleep / Turn off pop-up. */
+    void powerMenu() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER_HORIZONTAL);
+        col.setClipChildren(false);
+
+        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        tl.bottomMargin = u(36);
+        col.addView(text("Power", 34, TEXT, true), tl);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setClipChildren(false);
+        View sleep = powerOption("Sleep", "Screen off, wakes quickly", new MoonIcon(this), new Runnable() {
+            @Override
+            public void run() {
+                doPower(true);
+            }
+        });
+        View off = powerOption("Turn off", "Powers down completely", new PowerIcon(this), new Runnable() {
+            @Override
+            public void run() {
+                doPower(false);
+            }
+        });
+        LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(u(300), u(210));
+        a.rightMargin = u(24);
+        row.addView(sleep, a);
+        row.addView(off, new LinearLayout.LayoutParams(u(300), u(210)));
+        col.addView(row);
+
+        LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        hl.topMargin = u(32);
+        col.addView(text("Press Back to cancel", 20, MUTED, false), hl);
+
+        showOverlay(col);
+        sleep.requestFocus();
+    }
+
+    View powerOption(String label, String sub, View icon, final Runnable action) {
+        FrameLayout box = new FrameLayout(this);
+        LinearLayout in = new LinearLayout(this);
+        in.setOrientation(LinearLayout.VERTICAL);
+        in.setGravity(Gravity.CENTER);
+        in.addView(icon, new LinearLayout.LayoutParams(u(76), u(76)));
+        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        ll.topMargin = u(14);
+        in.addView(text(label, 30, TEXT, true), ll);
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        sl.topMargin = u(6);
+        in.addView(text(sub, 18, MUTED, false), sl);
+        box.addView(in, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        box.setFocusable(true);
+        box.setClickable(true);
+        box.setBackground(glass(false, 28));
+        box.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View x) {
+                action.run();
+            }
+        });
+        box.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View x, boolean f) {
+                x.setBackground(glass(f, 28));
+                float k = f ? 1.06f : 1f;
+                x.animate().scaleX(k).scaleY(k).setDuration(120).start();
+            }
+        });
+        return box;
+    }
+
+    // ---------------------------------------------------------------- pop-ups
+
+    void showOverlay(View content) {
+        closeOverlay();
+        focusBefore = getCurrentFocus();
+        setHomeFocusBlocked(true);
+        overlay = new FrameLayout(this);
+        overlay.setBackgroundColor(0xE60B0D14);
+        overlay.setClickable(true);
+        overlay.setClipChildren(false);
+        overlay.addView(content, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER));
+        rootView.addView(overlay, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+    }
+
+    void closeOverlay() {
+        if (overlay == null) {
+            return;
+        }
+        rootView.removeView(overlay);
+        overlay = null;
+        setHomeFocusBlocked(false);
+        if (focusBefore != null) {
+            focusBefore.requestFocus();
+        } else if (firstTile != null) {
+            firstTile.requestFocus();
+        }
+        focusBefore = null;
+    }
+
+    /** Stops the D-pad from wandering onto the home screen while a pop-up is open. */
+    void setHomeFocusBlocked(boolean block) {
+        for (int i = 0; i < rootView.getChildCount(); i++) {
+            View c = rootView.getChildAt(i);
+            if (c != overlay && c instanceof ViewGroup) {
+                ((ViewGroup) c).setDescendantFocusability(
+                        block ? ViewGroup.FOCUS_BLOCK_DESCENDANTS : ViewGroup.FOCUS_AFTER_DESCENDANTS);
+            }
+        }
+    }
+
+    void showList(String title, CharSequence[] names, final IndexPick cb) {
+        if (names.length == 0) {
+            toast("Nothing to show");
+            return;
+        }
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER_HORIZONTAL);
+        col.setClipChildren(false);
+
+        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        tl.bottomMargin = u(24);
+        col.addView(text(title, 32, TEXT, true), tl);
+
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        for (int k = 0; k < names.length; k++) {
+            final int idx = k;
+            TextView r = text(names[k].toString(), 24, TEXT, false);
+            r.setGravity(Gravity.CENTER_VERTICAL);
+            r.setPadding(u(28), u(16), u(28), u(16));
+            focusable(r, 18, new Runnable() {
+                @Override
+                public void run() {
+                    closeOverlay();
+                    cb.on(idx);
+                }
+            });
+            LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            rl.bottomMargin = u(8);
+            list.addView(r, rl);
+        }
+        ScrollView sv = new ScrollView(this);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.addView(list);
+        int boxHeight = Math.min(u(420), names.length * u(70));
+        col.addView(sv, new LinearLayout.LayoutParams(u(560), boxHeight));
+
+        LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        hl.topMargin = u(24);
+        col.addView(text("Press Back to cancel", 20, MUTED, false), hl);
+
+        showOverlay(col);
+        list.getChildAt(0).requestFocus();
     }
 
     // ---------------------------------------------------------------- view helpers
@@ -846,6 +1027,32 @@ public class MainActivity extends Activity {
             } catch (IOException e) {
                 // ignore
             }
+        }
+    }
+
+    /** Crescent moon drawn in code, used for Sleep. */
+    class MoonIcon extends View {
+        final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        MoonIcon(Context c) {
+            super(c);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(TEXT);
+        }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            float w = getWidth();
+            float hh = getHeight();
+            float r = Math.min(w, hh) * 0.34f;
+            float cx = w / 2f;
+            float cy = hh / 2f;
+            Path moon = new Path();
+            moon.addCircle(cx, cy, r, Path.Direction.CW);
+            Path bite = new Path();
+            bite.addCircle(cx + r * 0.55f, cy - r * 0.35f, r * 0.85f, Path.Direction.CW);
+            moon.op(bite, Path.Op.DIFFERENCE);
+            c.drawPath(moon, p);
         }
     }
 
